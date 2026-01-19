@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AI 유묘 선발기</title>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        /* 기본 스타일 및 폰트 */
+        body { margin: 0; overflow: hidden; background: #2c3e50; font-family: 'Noto Sans KR', sans-serif; color: #ecf0f1; }
+        #app-container { position: relative; width: 100vw; height: 100vh; display: flex; flex-direction: column; }
+
+        /* 비디오 및 캔버스 영역 */
+        #camera-feed-container { position: relative; flex-grow: 1; display: flex; justify-content: center; align-items: center; background: #000; overflow: hidden; }
+        video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); /* 전면 카메라 미러링, 후면 카메라 시 삭제 */ }
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+
+        /* 컨트롤 및 결과 영역 */
+        #controls { padding: 15px; background: #34495e; text-align: center; border-top: 1px solid #4e6a87; }
+        #message { margin-bottom: 10px; font-size: 1.1em; color: #ecf0f1; }
+        #analyze-button { padding: 15px 30px; font-size: 1.2em; border-radius: 30px; border: none; background: #2ecc71; color: white; cursor: pointer; transition: background 0.3s ease; }
+        #analyze-button:active { background: #27ae60; }
+        #analyze-button:disabled { background: #7f8c8d; cursor: not-allowed; }
+
+        /* 결과 표시 오버레이 */
+        #best-cell-overlay {
+            position: absolute;
+            border: 5px solid #e74c3c; /* 가장 녹색이 많은 영역 테두리 */
+            box-sizing: border-box;
+            pointer-events: none; /* 클릭 이벤트 방지 */
+            transition: all 0.2s ease-out;
+            opacity: 0;
+        }
+
+        /* 저장된 유묘 목록 */
+        #saved-mueyo-list {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            max-height: 40%;
+            background: rgba(0,0,0,0.8);
+            backdrop-filter: blur(5px);
+            overflow-y: auto;
+            transform: translateY(100%);
+            transition: transform 0.3s ease-out;
+            border-top-left-radius: 15px;
+            border-top-right-radius: 15px;
+            box-shadow: 0 -5px 20px rgba(0,0,0,0.3);
+            display: flex; /* 내부 아이템 정렬용 */
+            flex-direction: column;
+        }
+        #saved-mueyo-list.visible { transform: translateY(0); }
+
+        #list-toggle-button {
+            position: absolute;
+            top: -40px; /* 목록 위로 올리기 */
+            left: 50%;
+            transform: translateX(-50%);
+            background: #f1c40f;
+            color: #333;
+            padding: 8px 20px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            cursor: pointer;
+            box-shadow: 0 -2px 5px rgba(0,0,0,0.2);
+            z-index: 10;
+        }
+
+        #saved-list-content {
+            padding: 15px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            justify-content: flex-start; /* 왼쪽부터 채우기 */
+        }
+        .saved-item {
+            width: calc(33% - 10px); /* 한 줄에 3개씩 */
+            background: #2c3e50;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            text-align: center;
+            position: relative;
+        }
+        .saved-item img {
+            width: 100%;
+            height: 90px; /* 고정 높이 */
+            object-fit: cover;
+            display: block;
+        }
+        .saved-item p {
+            font-size: 0.8em;
+            margin: 5px 0;
+            color: #bdc3c7;
+        }
+        .delete-btn {
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            background: rgba(231, 76, 60, 0.8);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            font-size: 0.7em;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            cursor: pointer;
+            line-height: 1;
+        }
+    </style>
+</head>
+<body>
+
+<div id="app-container">
+    <div id="camera-feed-container">
+        <video id="video" autoplay playsinline></video>
+        <canvas id="canvas"></canvas>
+        <div id="best-cell-overlay"></div>
+    </div>
+    
+    <div id="controls">
+        <p id="message">트레이를 비추고 '최고 유묘 선발' 버튼을 누르세요.</p>
+        <button id="analyze-button" onclick="analyzeGreenery()">최고 유묘 선발</button>
+    </div>
+
+    <div id="saved-mueyo-list">
+        <button id="list-toggle-button">기록 열기/닫기</button>
+        <div id="saved-list-content">
+            <p id="no-saved-items" style="color: #ccc; text-align: center; width: 100%; margin-top: 20px;">저장된 유묘가 없습니다.</p>
+        </div>
+    </div>
+</div>
+
+<script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const messageDisplay = document.getElementById('message');
+    const analyzeButton = document.getElementById('analyze-button');
+    const bestCellOverlay = document.getElementById('best-cell-overlay');
+    const savedMueyoList = document.getElementById('saved-mueyo-list');
+    const listToggleButton = document.getElementById('list-toggle-button');
+    const savedListContent = document.getElementById('saved-list-content');
+    const noSavedItemsMessage = document.getElementById('no-saved-items');
+
+    let videoStream;
+    let savedMueyo = JSON.parse(localStorage.getItem('savedMueyo')) || []; // 로컬 저장소에서 데이터 불러오기
+
+    // 비디오 스트림 시작 (후면 카메라 우선)
+    async function startCamera() {
+        try {
+            videoStream = await navigator.mediaDevices.getUserMedia({
+                video: {
+                    facingMode: "environment", // 후면 카메라
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 }
+                }
+            });
+            video.srcObject = videoStream;
+            video.onloadedmetadata = () => {
+                video.play();
+                messageDisplay.textContent = "트레이를 비추고 '최고 유묘 선발' 버튼을 누르세요.";
+            };
+        } catch (err) {
+            console.error("카메라 접근 에러: ", err);
+            messageDisplay.textContent = "카메라 권한이 필요합니다. 설정에서 허용해주세요.";
+            analyzeButton.disabled = true;
+        }
+    }
+
+    // HSV 변환 함수 (녹색 판별에 더 정확)
+    function rgbToHsv(r, g, b) {
+        r /= 255; g /= 255; b /= 255;
+        let max = Math.max(r, g, b), min = Math.min(r, g, b);
+        let h, s, v = max;
+
+        let d = max - min;
+        s = max === 0 ? 0 : d / max;
+
+        if (max === min) {
+            h = 0; // achromatic
+        } else {
+            switch (max) {
+                case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+                case g: h = (b - r) / d + 2; break;
+                case b: h = (r - g) / d + 4; break;
+            }
+            h /= 6;
+        }
+        return [h * 360, s, v]; // H: 0-360, S: 0-1, V: 0-1
+    }
+
+    // 녹색 픽셀을 세는 함수
+    function countGreenPixels(imageData, startX, startY, width, height) {
+        let greenCount = 0;
+        const data = imageData.data;
+        const imgWidth = imageData.width;
+
+        for (let y = startY; y < startY + height; y++) {
+            for (let x = startX; x < startX + width; x++) {
+                const i = (y * imgWidth + x) * 4;
+                const r = data[i];
+                const g = data[i + 1];
+                const b = data[i + 2];
+
+                // HSV로 변환하여 녹색 범위 판별 (더 정확)
+                const [h, s, v] = rgbToHsv(r, g, b);
+
+                // 녹색 범위 (대략 60-180), 채도(s)와 명도(v)가 어느정도 이상이어야 함
+                if (h >= 60 && h <= 180 && s > 0.3 && v > 0.3) {
+                    greenCount++;
+                }
+            }
+        }
+        return greenCount;
+    }
+
+    // 분석 실행
+    async function analyzeGreenery() {
+        analyzeButton.disabled = true;
+        messageDisplay.textContent = "분석 중...";
+        bestCellOverlay.style.opacity = 0; // 기존 오버레이 숨기기
+
+        // 캔버스 크기를 비디오와 동일하게 설정
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        
+        // 트레이를 가로/세로 몇 칸으로 나눌지 (예: 6x10 트레이)
+        const gridCols = 6;
+        const gridRows = 10;
+
+        const cellWidth = canvas.width / gridCols;
+        const cellHeight = canvas.height / gridRows;
+
+        let maxGreenScore = -1;
+        let bestCell = { col: -1, row: -1, x: 0, y: 0, width: 0, height: 0, score: 0 };
+
+        for (let r = 0; r < gridRows; r++) {
+            for (let c = 0; c < gridCols; c++) {
+                const cellX = c * cellWidth;
+                const cellY = r * cellHeight;
+
+                const greenScore = countGreenPixels(imageData, cellX, cellY, cellWidth, cellHeight);
+
+                if (greenScore > maxGreenScore) {
+                    maxGreenScore = greenScore;
+                    bestCell = {
+                        col: c, row: r,
+                        x: cellX, y: cellY,
+                        width: cellWidth, height: cellHeight,
+                        score: greenScore
+                    };
+                }
+            }
+        }
+
+        if (bestCell.score > 0) {
+            // 최고 유묘 셀 시각화 (빨간색 테두리)
+            const videoRect = video.getBoundingClientRect(); // 비디오의 화면상 위치와 크기
+            const scaleX = videoRect.width / canvas.width;
+            const scaleY = videoRect.height / canvas.height;
+
+            bestCellOverlay.style.left = `${bestCell.x * scaleX}px`;
+            bestCellOverlay.style.top = `${bestCell.y * scaleY}px`;
+            bestCellOverlay.style.width = `${bestCell.width * scaleX}px`;
+            bestCellOverlay.style.height = `${bestCell.height * scaleY}px`;
+            bestCellOverlay.style.opacity = 1;
+
+            messageDisplay.textContent = `가장 건전한 유묘를 찾았습니다! (녹색 점수: ${bestCell.score.toLocaleString()})`;
+            
+            // 발견된 유묘를 이미지로 저장
+            saveBestMueyo(bestCell);
+
+        } else {
+            messageDisplay.textContent = "녹색 유묘를 찾지 못했습니다. 다시 시도해주세요.";
+            bestCellOverlay.style.opacity = 0;
+        }
+
+        analyzeButton.disabled = false;
+    }
+
+    // 발견된 유묘 이미지 저장 함수
+    function saveBestMueyo(cellInfo) {
+        // 캔버스에서 해당 유묘 영역만 잘라내기
+        const tempCanvas = document.createElement('canvas');
+        const tempCtx = tempCanvas.getContext('2d');
+        tempCanvas.width = cellInfo.width;
+        tempCanvas.height = cellInfo.height;
+        
+        tempCtx.drawImage(
+            video,
+            cellInfo.x, cellInfo.y, cellInfo.width, cellInfo.height, // 원본 비디오에서 잘라낼 영역
+            0, 0, cellInfo.width, cellInfo.height // tempCanvas에 그릴 영역
+        );
+
+        const imageUrl = tempCanvas.toDataURL('image/jpeg', 0.8); // JPEG 이미지 데이터 (품질 0.8)
+        const timestamp = new Date().toLocaleString('ko-KR');
+
+        const newItem = {
+            id: Date.now(),
+            imageUrl: imageUrl,
+            timestamp: timestamp,
+            score: cellInfo.score
+        };
+        savedMueyo.unshift(newItem); // 최신 항목을 맨 앞에 추가
+        if (savedMueyo.length > 30) { // 너무 많아지지 않도록 30개 제한
+            savedMueyo.pop();
+        }
+        localStorage.setItem('savedMueyo', JSON.stringify(savedMueyo));
+        renderSavedMueyo(); // 목록 새로고침
+        messageDisplay.textContent += " 기록되었습니다!";
+    }
+
+    // 저장된 유묘 목록 렌더링
+    function renderSavedMueyo() {
+        savedListContent.innerHTML = ''; // 기존 목록 초기화
+        if (savedMueyo.length === 0) {
+            savedListContent.appendChild(noSavedItemsMessage);
+            noSavedItemsMessage.style.display = 'block';
+            return;
+        } else {
+            noSavedItemsMessage.style.display = 'none';
+        }
+
+        savedMueyo.forEach(item => {
+            const itemDiv = document.createElement('div');
+            itemDiv.className = 'saved-item';
+            itemDiv.innerHTML = `
+                <img src="${item.imageUrl}" alt="선발 유묘">
+                <p>${item.timestamp}</p>
+                <p>녹색 점수: ${item.score.toLocaleString()}</p>
+                <button class="delete-btn" data-id="${item.id}">X</button>
+            `;
+            savedListContent.appendChild(itemDiv);
+        });
+
+        // 삭제 버튼 이벤트 리스너 추가
+        savedListContent.querySelectorAll('.delete-btn').forEach(button => {
+            button.onclick = (event) => {
+                const idToDelete = parseInt(event.target.dataset.id);
+                savedMueyo = savedMueyo.filter(item => item.id !== idToDelete);
+                localStorage.setItem('savedMueyo', JSON.stringify(savedMueyo));
+                renderSavedMueyo();
+            };
+        });
+    }
+
+    // 목록 토글 버튼 이벤트
+    listToggleButton.onclick = () => {
+        savedMueyoList.classList.toggle('visible');
+        listToggleButton.textContent = savedMueyoList.classList.contains('visible') ? '기록 닫기' : '기록 열기';
+    };
+
+    // 앱 초기화
+    document.addEventListener('DOMContentLoaded', () => {
+        startCamera();
+        renderSavedMueyo(); // 앱 시작 시 저장된 목록 로드 및 렌더링
+    });
+</script>
+</body>
+</html>
